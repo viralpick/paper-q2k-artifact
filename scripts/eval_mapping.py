@@ -103,6 +103,7 @@ class MetricsCollector:
     def __init__(self):
         self.no_knowledge = EvaluationMetrics()
         self.with_knowledge = EvaluationMetrics()
+        self.detailed_results = []  # Store detailed results per pair
         self.lock = asyncio.Lock()
 
     async def add_no_knowledge_result(self, prediction: int, label: int):
@@ -114,6 +115,11 @@ class MetricsCollector:
         """Add result for with-knowledge mode."""
         async with self.lock:
             self.with_knowledge.add_result(prediction, label)
+
+    async def add_detailed_result(self, result: dict[str, Any]):
+        """Add detailed result for a pair."""
+        async with self.lock:
+            self.detailed_results.append(result)
 
 
 class DecisionAgent:
@@ -220,6 +226,17 @@ async def evaluate_pair(
     logger.info(f"Base: {base[:80]}...")
     logger.info(f"Candidate: {candidate[:80]}...")
 
+    # Initialize detailed result dict
+    detailed_result = {
+        "pair_idx": idx,
+        "base_product": base,
+        "candidate_product": candidate,
+        "ground_truth": label,
+        "questions": None,
+        "no_knowledge": None,
+        "with_knowledge": None,
+    }
+
     try:
         # Step 1: Generate questions using reasoning agent
         async with semaphore:
@@ -232,6 +249,7 @@ async def evaluate_pair(
             return
 
         logger.info(f"Pair {idx}: Generated {len(questions)} questions")
+        detailed_result["questions"] = questions
 
         # Step 2a: No Knowledge Mode
         if mode in ["both", "no_knowledge"]:
@@ -242,6 +260,12 @@ async def evaluate_pair(
                 )
 
             await metrics.add_no_knowledge_result(prediction_nk, label)
+
+            detailed_result["no_knowledge"] = {
+                "prediction": prediction_nk,
+                "reasoning": reasoning_nk,
+                "correct": prediction_nk == label,
+            }
 
             logger.info(f"Pair {idx} [No Knowledge]:")
             logger.info(f"  Prediction: {prediction_nk} (Ground Truth: {label})")
@@ -274,10 +298,21 @@ async def evaluate_pair(
 
             await metrics.add_with_knowledge_result(prediction_wk, label)
 
+            detailed_result["with_knowledge"] = {
+                "prediction": prediction_wk,
+                "reasoning": reasoning_wk,
+                "correct": prediction_wk == label,
+                "reusable_answers_count": len(reusable_answers),
+                "reusable_answers": reusable_answers,
+            }
+
             logger.info(f"Pair {idx} [With Knowledge]:")
             logger.info(f"  Prediction: {prediction_wk} (Ground Truth: {label})")
             logger.info(f"  Correct: {'' if prediction_wk == label else ''}")
             logger.info(f"  Reasoning: {reasoning_wk[:100]}...")
+
+        # Add detailed result to metrics
+        await metrics.add_detailed_result(detailed_result)
 
     except Exception as e:
         logger.error(f"Pair {idx}: Error evaluating - {e}")
@@ -289,6 +324,7 @@ async def evaluate_mapping(
     max_pairs: int = None,
     concurrency: int = 10,
     mode: str = "both",
+    output_file: str = None,
 ):
     """
     Evaluate product mapping with and without knowledge augmentation.
@@ -299,6 +335,7 @@ async def evaluate_mapping(
         max_pairs: Maximum number of pairs to evaluate (None = all)
         concurrency: Maximum number of concurrent API calls
         mode: Evaluation mode ("both", "no_knowledge", "with_knowledge")
+        output_file: Path to save detailed results as JSONL (None = no output)
     """
     logger.info("\n" + "=" * 80)
     logger.info("Product Mapping Evaluation - Knowledge Augmentation Comparison")
@@ -421,6 +458,65 @@ async def evaluate_mapping(
             f"\n  Knowledge augmentation {'improved' if accuracy_improvement > 0 else 'decreased' if accuracy_improvement < 0 else 'maintained'} accuracy by {abs(accuracy_improvement):.2f}%"
         )
 
+    # Save detailed results to file
+    if output_file:
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Sort results by pair_idx
+        sorted_results = sorted(metrics.detailed_results, key=lambda x: x["pair_idx"])
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            for result in sorted_results:
+                f.write(json.dumps(result, ensure_ascii=False) + "\n")
+
+        logger.info(f"\n{'='*80}")
+        logger.info(f"DETAILED RESULTS")
+        logger.info(f"{'='*80}")
+        logger.info(f"Saved detailed results to: {output_file}")
+        logger.info(f"Total pairs: {len(sorted_results)}")
+
+    # Print summary of incorrect predictions
+    if metrics.detailed_results:
+        logger.info(f"\n{'='*80}")
+        logger.info("PREDICTION ANALYSIS")
+        logger.info(f"{'='*80}")
+
+        # Find incorrect predictions
+        nk_incorrect = []
+        wk_incorrect = []
+
+        for result in metrics.detailed_results:
+            if result.get("no_knowledge") and not result["no_knowledge"]["correct"]:
+                nk_incorrect.append(result)
+            if result.get("with_knowledge") and not result["with_knowledge"]["correct"]:
+                wk_incorrect.append(result)
+
+        if mode in ["both", "no_knowledge"]:
+            logger.info(f"\nNo Knowledge Mode - Incorrect Predictions: {len(nk_incorrect)}")
+            if nk_incorrect:
+                for result in nk_incorrect[:10]:  # Show up to 10
+                    logger.info(f"\n  Pair {result['pair_idx']}:")
+                    logger.info(f"    Ground Truth: {result['ground_truth']}")
+                    logger.info(f"    Prediction: {result['no_knowledge']['prediction']}")
+                    logger.info(f"    Base: {result['base_product'][:60]}...")
+                    logger.info(f"    Candidate: {result['candidate_product'][:60]}...")
+                if len(nk_incorrect) > 10:
+                    logger.info(f"\n  ... and {len(nk_incorrect) - 10} more (see output file)")
+
+        if mode in ["both", "with_knowledge"]:
+            logger.info(f"\nWith Knowledge Mode - Incorrect Predictions: {len(wk_incorrect)}")
+            if wk_incorrect:
+                for result in wk_incorrect[:10]:  # Show up to 10
+                    logger.info(f"\n  Pair {result['pair_idx']}:")
+                    logger.info(f"    Ground Truth: {result['ground_truth']}")
+                    logger.info(f"    Prediction: {result['with_knowledge']['prediction']}")
+                    logger.info(f"    Base: {result['base_product'][:60]}...")
+                    logger.info(f"    Candidate: {result['candidate_product'][:60]}...")
+                    logger.info(f"    Reusable Answers: {result['with_knowledge']['reusable_answers_count']}")
+                if len(wk_incorrect) > 10:
+                    logger.info(f"\n  ... and {len(wk_incorrect) - 10} more (see output file)")
+
     logger.info(f"\n{'='*80}\n")
 
 
@@ -459,6 +555,12 @@ if __name__ == "__main__":
         choices=["both", "no_knowledge", "with_knowledge"],
         help="Evaluation mode (default: both)",
     )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Path to save detailed results as JSONL (default: None, no output file)",
+    )
 
     args = parser.parse_args()
 
@@ -469,5 +571,6 @@ if __name__ == "__main__":
             args.max_pairs,
             args.concurrency,
             args.mode,
+            args.output,
         )
     )

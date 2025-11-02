@@ -1,7 +1,5 @@
 # (Q25) Question-to-Knowledge: Multi-Agent Generation of Inspectable Facts for Product Mapping
 
-**IEEE BigData Conference Artifact**
-
 This repository provides a reproducible implementation of Q2K, a multi-agent system for product matching that uses question decomposition and knowledge augmentation. The system determines whether two product descriptions refer to the same SKU by generating targeted disambiguation questions and retrieving authoritative information from cached knowledge or web searches.
 
 ## Overview
@@ -75,6 +73,9 @@ python -m scripts.eval_mapping --mode no_knowledge --max-pairs 10
 
 # Run only with knowledge augmentation
 python -m scripts.eval_mapping --mode with_knowledge --concurrency 20
+
+# Save detailed results to examine incorrect predictions
+python -m scripts.eval_mapping --output results/eval_results.jsonl
 ```
 
 **Arguments:**
@@ -84,6 +85,7 @@ python -m scripts.eval_mapping --mode with_knowledge --concurrency 20
 - `--max-pairs`: Maximum number of pairs to evaluate (default: all)
 - `--concurrency`: Max concurrent API calls (default: `10`)
 - `--mode`: Evaluation mode - `both`, `no_knowledge`, or `with_knowledge` (default: `both`)
+- `--output`: Path to save detailed results as JSONL (default: None, prints to console only)
 
 **What it does**: Evaluates product matching accuracy by comparing predictions against ground truth labels. Measures accuracy, precision, recall, F1 score, and shows the improvement from knowledge augmentation.
 
@@ -93,6 +95,20 @@ python -m scripts.eval_mapping --mode with_knowledge --concurrency 20
 - **Precision/Recall/F1**: For "same SKU" predictions
 - **Confusion Matrix**: TP, FP, TN, FN counts
 - **Improvement**: Accuracy gain from knowledge augmentation (when mode=`both`)
+- **Prediction Analysis**: Summary of incorrect predictions showing which pairs were wrong
+
+**Detailed Output File** (when `--output` is specified):
+
+Each line in the output JSONL contains:
+
+- `pair_idx`: Pair number
+- `base_product`, `candidate_product`: Product descriptions
+- `ground_truth`: Ground truth label (0 or 1)
+- `questions`: Generated disambiguation questions
+- `no_knowledge`: Prediction, reasoning, and correctness for no-knowledge mode
+- `with_knowledge`: Prediction, reasoning, correctness, reusable answers count, and full retrieved knowledge
+
+This allows you to examine which pairs each mode predicted incorrectly and understand why.
 
 ---
 
