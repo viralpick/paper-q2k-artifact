@@ -1,4 +1,4 @@
-# (Q25) Question-to-Knowledge: Multi-Agent Generation of Inspectable Facts for Product Mapping
+# (Q2K) Question-to-Knowledge: Multi-Agent Generation of Inspectable Facts for Product Mapping
 
 This repository provides a reproducible implementation of Q2K, a multi-agent system for product matching that uses question decomposition and knowledge augmentation. The system determines whether two product descriptions refer to the same SKU by generating targeted disambiguation questions and retrieving authoritative information from cached knowledge or web searches.
 
